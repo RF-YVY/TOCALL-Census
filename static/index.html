@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TOCALL Census</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=1.0.0-ui8" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">APRS-IS deployment census</p>
+        <h1>TOCALL Census</h1>
+      </div>
+      <div class="header-actions">
+        <button type="button" id="guideButton" class="header-button">How To</button>
+        <button type="button" id="themeToggle" class="header-button" aria-pressed="false">Dark</button>
+        <div class="status-pill" id="statusPill">Ready</div>
+      </div>
+    </header>
+
+    <main>
+      <section class="control-band">
+        <form id="connectForm" class="controls">
+          <label>
+            TOCALL
+            <input id="targetTocall" name="target_tocall" placeholder="APDW16" autocomplete="off" />
+          </label>
+          <label>
+            APRS-IS filter
+            <input id="aprsFilter" name="aprs_filter" value="r/0/0/9999" autocomplete="off" />
+          </label>
+          <label>
+            Server
+            <input id="server" name="server" value="rotate.aprs2.net" autocomplete="off" />
+          </label>
+          <label>
+            Port
+            <input id="port" name="port" value="14580" inputmode="numeric" />
+          </label>
+          <button type="submit" id="connectButton">Connect</button>
+          <button type="button" id="disconnectButton">Disconnect</button>
+          <button type="button" id="clearButton">Clear Session</button>
+          <button type="button" id="refreshRegistryButton">Refresh Registry</button>
+          <a class="button-link" href="/api/export/json" target="_blank" rel="noreferrer">Export JSON</a>
+          <a class="button-link" href="/api/export/csv" target="_blank" rel="noreferrer">Export CSV</a>
+          <a class="button-link" href="/api/export/pdf" target="_blank" rel="noreferrer">Export PDF</a>
+          <details class="advanced-identity">
+            <summary>Advanced APRS-IS identity</summary>
+            <div class="advanced-fields">
+              <label>
+                Callsign
+                <input id="callsign" name="callsign" value="N0CALL" autocomplete="off" />
+              </label>
+              <label>
+                Passcode
+                <input id="passcode" name="passcode" value="-1" type="password" autocomplete="off" />
+              </label>
+            </div>
+          </details>
+        </form>
+      </section>
+
+      <section class="metric-grid">
+        <div class="metric">
+          <span>Packets</span>
+          <strong id="packetCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>Unique Stations</span>
+          <strong id="uniqueSources">0</strong>
+        </div>
+        <div class="metric">
+          <span>Registry Entries</span>
+          <strong id="registryCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>RF via IGate</span>
+          <strong id="rfCount">0</strong>
+        </div>
+        <div class="metric update-metric" id="versionMetric">
+          <span>Version</span>
+          <strong id="currentVersion">v1.0.0</strong>
+          <a id="versionStatus" href="https://github.com/RF-YVY/TOCALL-Census" target="_blank" rel="noreferrer">Checking GitHub...</a>
+        </div>
+      </section>
+
+      <section class="panel found-panel">
+        <div class="panel-head">
+          <h2>Found in:</h2>
+          <span>Unique located packets</span>
+        </div>
+        <div class="found-grid">
+          <div>
+            <h3>US States</h3>
+            <div id="stateList" class="score-list"></div>
+          </div>
+          <div>
+            <h3>Countries</h3>
+            <div id="countryList" class="score-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel registry-panel">
+        <div class="panel-head">
+          <h2>TOCALL Registry Search</h2>
+          <span>
+            <a id="registryWebLink" href="https://aprsorg.github.io/aprs-deviceid-web/" target="_blank" rel="noreferrer">Web registry</a>
+            <a id="registryYamlLink" href="https://github.com/aprsorg/aprs-deviceid/blob/main/tocalls.yaml" target="_blank" rel="noreferrer">YAML source</a>
+          </span>
+        </div>
+        <form id="registrySearchForm" class="registry-search">
+          <label>
+            Search TOCALL or software
+            <input id="registrySearchInput" name="q" placeholder="APDW16 or DireWolf" autocomplete="off" />
+          </label>
+          <button type="submit">Search</button>
+        </form>
+        <div id="registrySearchResults" class="registry-results">
+          <div class="muted">Search the local cached TOCALL registry or open the upstream APRS device ID browser.</div>
+        </div>
+      </section>
+
+      <section class="dashboard-grid">
+        <div class="panel map-panel">
+          <div class="panel-head">
+            <h2>Heard Positions</h2>
+            <span id="mapCount">0 mapped</span>
+          </div>
+          <div id="map"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Top TOCALLs</h2>
+            <span id="targetLabel">All traffic</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>TOCALL</th>
+                  <th>Device or software</th>
+                  <th>Count</th>
+                  <th>Last heard</th>
+                </tr>
+              </thead>
+              <tbody id="topTocalls"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Live Packets</h2>
+          <a href="/api/counts" target="_blank" rel="noreferrer">JSON counts</a>
+        </div>
+        <div id="packetList" class="packet-list"></div>
+      </section>
+    </main>
+
+    <dialog id="guideDialog" class="guide-dialog">
+      <div class="guide-head">
+        <h2>How To Use TOCALL Census</h2>
+        <button type="button" id="closeGuideButton" aria-label="Close guide">Close</button>
+      </div>
+      <div class="guide-body">
+        <section>
+          <h3>1. Choose What To Track</h3>
+          <p>Enter a TOCALL such as APDW16 to track one application or radio family, or leave the TOCALL field blank to count all traffic that matches your APRS-IS filter.</p>
+        </section>
+        <section>
+          <h3>2. Set An APRS-IS Filter</h3>
+          <p>Use a geographic filter such as r/34/-89/250 for a regional census, r/0/0/9999 for worldwide traffic, t/p for position packets, or combine them as r/34/-89/250 t/p.</p>
+        </section>
+        <section>
+          <h3>3. Connect</h3>
+          <p>Click Connect to start receive-only monitoring. A callsign and APRS-IS passcode are optional for this app; the default N0CALL and -1 values identify it as an unverified receive-only client.</p>
+        </section>
+        <section>
+          <h3>4. Read The Results</h3>
+          <p>Top TOCALLs shows software and radio adoption. Found in shows US states and countries using unique located packets, so duplicate raw packets are not counted. Live Packets shows raw packet evidence. Heard Positions maps packets that include standard uncompressed APRS coordinates.</p>
+        </section>
+        <section>
+          <h3>5. Start Fresh Or Export</h3>
+          <p>Use Clear Session before tracking a new TOCALL when you want an empty count table, packet list, and map. Use Export PDF, JSON, or CSV to save the current report.</p>
+        </section>
+        <section>
+          <h3>6. Optional Identity</h3>
+          <p>Open Advanced APRS-IS identity only if you want APRS-IS servers to see your callsign in their logs. It is not required for decoding or counting TOCALL traffic.</p>
+        </section>
+        <section>
+          <h3>7. Keep The Registry Fresh</h3>
+          <p>Refresh Registry downloads the APRS Foundation device identification database so codes like APDW16, APK003, and APAT81 resolve to human-readable device names.</p>
+        </section>
+      </div>
+    </dialog>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/static/app.js?v=1.0.0-ui8"></script>
+  </body>
+</html>
