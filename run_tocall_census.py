@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import os
+import sys
 import webbrowser
 
 import uvicorn
 
-from app.main import app
+
+def configure_windows_event_loop() -> None:
+    if sys.platform != "win32":
+        return
+    with contextlib.suppress(AttributeError):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 def main() -> None:
+    configure_windows_event_loop()
+    from app.main import app
+
     parser = argparse.ArgumentParser(description="Run TOCALL Census")
     parser.add_argument("--host", default="127.0.0.1", help="Web server host")
     parser.add_argument("--port", default=14502, type=int, help="Web server port")
