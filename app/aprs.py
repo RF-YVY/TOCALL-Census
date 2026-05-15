@@ -96,9 +96,17 @@ def classify_transport(path: str) -> str:
 
 PacketCallback = Callable[[ParsedPacket], Awaitable[None]]
 StatusCallback = Callable[[str, str], Awaitable[None]]
+RECONNECT_DELAY_SECONDS = 1
+INITIAL_RETRY_DELAY_SECONDS = 2
+MAX_RETRY_DELAY_SECONDS = 30
+READ_TIMEOUT_SECONDS = 90
 
 
 class LoginRejectedError(RuntimeError):
+    pass
+
+
+class AprsIsConnectionDropped(RuntimeError):
     pass
 
 
@@ -124,6 +132,11 @@ class AprsIsClient:
         self._stop_event = asyncio.Event()
         self.settings: dict[str, str | int] = {}
         self._passcode = ""
+        self.started_at: datetime | None = None
+        self.connected_at: datetime | None = None
+        self.last_packet_at: datetime | None = None
+        self.reconnect_count = 0
+        self.last_reconnect_reason = ""
 
     @property
     def running(self) -> bool:
@@ -141,6 +154,11 @@ class AprsIsClient:
         await self.stop()
         self._stop_event = asyncio.Event()
         self._passcode = passcode
+        self.started_at = datetime.now(UTC)
+        self.connected_at = None
+        self.last_packet_at = None
+        self.reconnect_count = 0
+        self.last_reconnect_reason = ""
         self.settings = {
             "server": server,
             "port": port,
@@ -157,23 +175,33 @@ class AprsIsClient:
         self._task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await self._task
+        self.connected_at = None
         await self._on_status("stopped", "Disconnected from APRS-IS")
 
     async def _run(self) -> None:
-        retry_delay = 2
+        retry_delay = INITIAL_RETRY_DELAY_SECONDS
         while not self._stop_event.is_set():
             try:
                 await self._connect_once()
-                retry_delay = 2
+                retry_delay = INITIAL_RETRY_DELAY_SECONDS
             except asyncio.CancelledError:
                 raise
             except LoginRejectedError as exc:
                 await self._on_status("rejected", str(exc))
                 self._stop_event.set()
+            except AprsIsConnectionDropped as exc:
+                self.connected_at = None
+                self.reconnect_count += 1
+                self.last_reconnect_reason = str(exc)
+                await self._on_status("reconnecting", f"{exc}; reconnecting")
+                await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+                retry_delay = INITIAL_RETRY_DELAY_SECONDS
             except (OSError, TimeoutError, UnicodeDecodeError) as exc:
-                await self._on_status("error", f"{type(exc).__name__}: {exc}")
+                self.connected_at = None
+                self.last_reconnect_reason = f"{type(exc).__name__}: {exc}"
+                await self._on_status("reconnecting", f"{type(exc).__name__}: {exc}; retrying in {retry_delay}s")
                 await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 30)
+                retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY_SECONDS)
 
     async def _connect_once(self) -> None:
         server = str(self.settings["server"])
@@ -187,6 +215,7 @@ class AprsIsClient:
             port,
             family=socket.AF_UNSPEC,
         )
+        self.connected_at = datetime.now(UTC)
         await self._on_status("connecting", f"Connected TCP to {server}:{port}")
 
         login = f"user {callsign} pass {passcode} vers TOCALL-Census 1.0"
@@ -198,12 +227,16 @@ class AprsIsClient:
 
         try:
             while not self._stop_event.is_set():
-                line = await asyncio.wait_for(reader.readline(), timeout=90)
+                try:
+                    line = await asyncio.wait_for(reader.readline(), timeout=READ_TIMEOUT_SECONDS)
+                except (OSError, TimeoutError, UnicodeDecodeError) as exc:
+                    raise AprsIsConnectionDropped(f"APRS-IS connection dropped ({type(exc).__name__}: {exc})") from exc
                 if not line:
-                    raise ConnectionError("APRS-IS server closed the connection")
+                    raise AprsIsConnectionDropped("APRS-IS server closed the connection")
                 text = line.decode("utf-8", errors="replace").strip()
                 packet = parse_packet(text)
                 if packet:
+                    self.last_packet_at = packet.heard_at
                     await self._on_packet(packet)
                 elif text.startswith("#"):
                     state, message = server_comment_status(text)

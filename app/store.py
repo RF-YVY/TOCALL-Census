@@ -4,7 +4,7 @@ import csv
 import io
 import sqlite3
 from collections import Counter
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +67,27 @@ class PacketStore:
             ),
         )
         self.conn.commit()
+
+    def prune(self, *, retention_days: int = 0, max_packets: int = 0) -> int:
+        removed = 0
+        if retention_days > 0:
+            cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+            cursor = self.conn.execute("DELETE FROM packets WHERE heard_at < ?", (cutoff.isoformat(),))
+            removed += cursor.rowcount if cursor.rowcount != -1 else 0
+        if max_packets > 0:
+            cursor = self.conn.execute(
+                """
+                DELETE FROM packets
+                WHERE id NOT IN (
+                    SELECT id FROM packets ORDER BY id DESC LIMIT ?
+                )
+                """,
+                (max_packets,),
+            )
+            removed += cursor.rowcount if cursor.rowcount != -1 else 0
+        if removed:
+            self.conn.commit()
+        return removed
 
     def summary(self, registry: Any, target_tocall: str | None = None) -> dict[str, Any]:
         params: list[Any] = []
@@ -202,6 +223,47 @@ class PacketStore:
         writer.writeheader()
         writer.writerows(rows)
         return output.getvalue()
+
+    def daily_summary_csv(self, registry: Any, target_tocall: str | None = None) -> str:
+        rows = self.daily_summary(registry, target_tocall)
+        output = io.StringIO()
+        fieldnames = ["date", "tocall", "label", "packet_count", "unique_sources", "last_heard"]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+        return output.getvalue()
+
+    def daily_summary(self, registry: Any, target_tocall: str | None = None) -> list[dict[str, Any]]:
+        params: list[Any] = []
+        where = ""
+        if target_tocall:
+            where = "WHERE tocall = ?"
+            params.append(target_tocall.upper())
+        rows = self.conn.execute(
+            f"""
+            SELECT substr(heard_at, 1, 10) AS date,
+                   tocall,
+                   COUNT(*) AS packet_count,
+                   COUNT(DISTINCT source) AS unique_sources,
+                   MAX(heard_at) AS last_heard
+            FROM packets
+            {where}
+            GROUP BY date, tocall
+            ORDER BY date DESC, packet_count DESC, tocall ASC
+            """,
+            params,
+        ).fetchall()
+        return [
+            {
+                "date": row["date"],
+                "tocall": row["tocall"],
+                "label": registry.lookup(row["tocall"]) or "Unknown",
+                "packet_count": row["packet_count"],
+                "unique_sources": row["unique_sources"],
+                "last_heard": row["last_heard"],
+            }
+            for row in rows
+        ]
 
     def location_summary(self, target_tocall: str | None = None) -> dict[str, list[dict[str, Any]]]:
         params: list[Any] = []

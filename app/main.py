@@ -22,7 +22,8 @@ from app.store import PacketStore
 
 STATIC_DIR = static_dir()
 APP_NAME = "TOCALL Census"
-APP_VERSION = "v1.0.0"
+APP_VERSION = "v1.0.1"
+APP_STARTED_AT = datetime.now(UTC)
 GITHUB_REPO = "RF-YVY/TOCALL-Census"
 GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
 GITHUB_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -37,7 +38,16 @@ async def lifespan(_: FastAPI):
             await registry.refresh()
         except Exception as exc:  # noqa: BLE001
             status.update({"state": "warning", "message": f"Registry refresh failed: {exc}"})
+    if app_settings.values.get("auto_connect"):
+        await client.start(
+            server=str(app_settings.values.get("server") or "rotate.aprs2.net"),
+            port=int(app_settings.values.get("port") or 14580),
+            callsign=str(app_settings.values.get("callsign") or "N0CALL"),
+            passcode=str(app_settings.values.get("passcode") or "-1"),
+            aprs_filter=str(app_settings.values.get("filter") or ""),
+        )
     yield
+    await client.stop()
 
 
 app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=lifespan)
@@ -58,10 +68,17 @@ class ConnectRequest(BaseModel):
     passcode: str = Field(default="-1", min_length=1)
     aprs_filter: str = Field(default="r/0/0/9999", max_length=200)
     target_tocall: str = Field(default="", max_length=12)
+    auto_connect: bool = False
+    retention_days: int = Field(default=0, ge=0, le=3650)
+    max_packets: int = Field(default=0, ge=0, le=1_000_000)
 
 
 async def on_packet(packet: ParsedPacket) -> None:
     store.add_packet(packet)
+    store.prune(
+        retention_days=int(app_settings.values.get("retention_days") or 0),
+        max_packets=int(app_settings.values.get("max_packets") or 0),
+    )
     if target_tocall and packet.tocall != target_tocall:
         return
     await broadcast({"type": "packet", "packet": packet_to_event(packet)})
@@ -81,28 +98,66 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/favicon.ico")
+async def favicon() -> FileResponse:
+    return FileResponse(STATIC_DIR / "icons" / "favicon.ico")
+
+
+@app.get("/site.webmanifest")
+async def webmanifest() -> FileResponse:
+    return FileResponse(STATIC_DIR / "icons" / "site.webmanifest", media_type="application/manifest+json")
+
+
 @app.post("/api/connect")
 async def connect(request: ConnectRequest) -> dict[str, Any]:
     global target_tocall
     target_tocall = request.target_tocall.strip().upper() or None
+    passcode = saved_passcode_if_masked(request.passcode)
     app_settings.update(
         {
             "server": request.server.strip(),
             "port": request.port,
             "callsign": request.callsign.strip().upper(),
-            "passcode": request.passcode.strip(),
+            "passcode": passcode,
             "filter": request.aprs_filter.strip(),
             "target_tocall": target_tocall or "",
+            "auto_connect": request.auto_connect,
+            "retention_days": request.retention_days,
+            "max_packets": request.max_packets,
         }
     )
     await client.start(
         server=request.server.strip(),
         port=request.port,
         callsign=request.callsign.strip().upper(),
-        passcode=request.passcode.strip(),
+        passcode=passcode,
         aprs_filter=request.aprs_filter.strip(),
     )
     return {"ok": True, "status": status_payload()}
+
+
+@app.post("/api/settings")
+async def update_settings(request: ConnectRequest) -> dict[str, Any]:
+    global target_tocall
+    target_tocall = request.target_tocall.strip().upper() or None
+    passcode = saved_passcode_if_masked(request.passcode)
+    app_settings.update(
+        {
+            "server": request.server.strip(),
+            "port": request.port,
+            "callsign": request.callsign.strip().upper(),
+            "passcode": passcode,
+            "filter": request.aprs_filter.strip(),
+            "target_tocall": target_tocall or "",
+            "auto_connect": request.auto_connect,
+            "retention_days": request.retention_days,
+            "max_packets": request.max_packets,
+        }
+    )
+    removed = store.prune(retention_days=request.retention_days, max_packets=request.max_packets)
+    payload = snapshot_payload()
+    await broadcast({"type": "snapshot", **payload})
+    return {"ok": True, "removed": removed, **payload}
 
 
 @app.post("/api/disconnect")
@@ -208,8 +263,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         )
         while True:
             await websocket.receive_text()
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, ConnectionResetError, RuntimeError):
+        pass
+    finally:
         clients.discard(websocket)
+        await broadcast({"type": "health", "health": health_payload()})
 
 
 async def broadcast(payload: dict[str, Any]) -> None:
@@ -219,7 +277,7 @@ async def broadcast(payload: dict[str, Any]) -> None:
     for websocket in clients:
         try:
             await websocket.send_json(payload)
-        except RuntimeError:
+        except (ConnectionResetError, RuntimeError, WebSocketDisconnect):
             dead.append(websocket)
     for websocket in dead:
         clients.discard(websocket)
@@ -252,6 +310,7 @@ def status_payload() -> dict[str, Any]:
         **status,
         "running": client.running,
         "settings": public_settings(),
+        "health": health_payload(),
     }
 
 
@@ -263,6 +322,7 @@ def snapshot_payload() -> dict[str, Any]:
         "target_tocall": target_tocall,
         "registry_count": len(registry.entries),
         "settings": app_settings.public(),
+        "health": health_payload(),
         "registry_links": {
             "master": REGISTRY_MASTER_URL,
             "web": REGISTRY_WEB_URL,
@@ -283,13 +343,37 @@ def safe_filename_part(value: str) -> str:
     return cleaned or "ALL"
 
 
-def public_settings() -> dict[str, str | int]:
+def saved_passcode_if_masked(value: str) -> str:
+    cleaned = value.strip()
+    if cleaned == "masked":
+        return str(app_settings.values.get("passcode") or "")
+    return cleaned
+
+
+def public_settings() -> dict[str, str | int | bool]:
     return {
         "server": client.settings.get("server", ""),
         "port": client.settings.get("port", ""),
         "callsign": client.settings.get("callsign", ""),
         "filter": client.settings.get("filter", ""),
         "passcode": "masked" if client.settings else "",
+        "auto_connect": bool(app_settings.values.get("auto_connect")),
+        "retention_days": int(app_settings.values.get("retention_days") or 0),
+        "max_packets": int(app_settings.values.get("max_packets") or 0),
+    }
+
+
+def health_payload() -> dict[str, Any]:
+    now = datetime.now(UTC)
+    uptime_seconds = int((now - APP_STARTED_AT).total_seconds())
+    connected_seconds = int((now - client.connected_at).total_seconds()) if client.connected_at else 0
+    return {
+        "app_uptime_seconds": uptime_seconds,
+        "aprs_connected_seconds": connected_seconds,
+        "last_packet_at": client.last_packet_at.isoformat() if client.last_packet_at else None,
+        "reconnect_count": client.reconnect_count,
+        "last_reconnect_reason": client.last_reconnect_reason,
+        "web_clients": len(clients),
     }
 
 

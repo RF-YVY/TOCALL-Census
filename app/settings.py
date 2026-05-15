@@ -7,13 +7,16 @@ from typing import Any
 from app.paths import data_dir
 
 
-DEFAULT_SETTINGS: dict[str, str | int] = {
+DEFAULT_SETTINGS: dict[str, str | int | bool] = {
     "server": "rotate.aprs2.net",
     "port": 14580,
     "callsign": "N0CALL",
     "passcode": "-1",
     "filter": "r/0/0/9999",
     "target_tocall": "",
+    "auto_connect": False,
+    "retention_days": 0,
+    "max_packets": 0,
 }
 
 SETTINGS_PATH = data_dir() / "settings.json"
@@ -26,7 +29,7 @@ class AppSettings:
         self.values = DEFAULT_SETTINGS.copy()
         self.load()
 
-    def load(self) -> dict[str, str | int]:
+    def load(self) -> dict[str, str | int | bool]:
         if not self.path.exists():
             return self.values
         try:
@@ -39,7 +42,7 @@ class AppSettings:
                     self.values[key] = payload[key]
         return self.values
 
-    def update(self, values: dict[str, Any]) -> dict[str, str | int]:
+    def update(self, values: dict[str, Any]) -> dict[str, str | int | bool]:
         for key in DEFAULT_SETTINGS:
             if key in values and values[key] is not None:
                 self.values[key] = values[key]
@@ -49,7 +52,7 @@ class AppSettings:
     def save(self) -> None:
         self.path.write_text(json.dumps(self.values, indent=2), encoding="utf-8")
 
-    def public(self) -> dict[str, str | int]:
+    def public(self) -> dict[str, str | int | bool]:
         return {
             **self.values,
             "passcode": "masked" if self.values.get("passcode") else "",
