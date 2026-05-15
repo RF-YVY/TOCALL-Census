@@ -61,13 +61,51 @@ def test_report_exports_rows_and_csv(tmp_path) -> None:
     assert "APDW16" in csv_text
 
 
+def test_daily_summary_exports_counts_by_day(tmp_path) -> None:
+    store = PacketStore(tmp_path / "packets.sqlite3")
+    registry = TocallRegistry()
+    registry.entries = {"APDW??": "WB2OSZ DireWolf"}
+    packet = make_packet()
+    packet.heard_at = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    store.add_packet(packet)
+
+    rows = store.daily_summary(registry)
+    csv_text = store.daily_summary_csv(registry)
+
+    assert rows == [
+        {
+            "date": "2026-05-15",
+            "tocall": "APDW16",
+            "label": "WB2OSZ DireWolf",
+            "packet_count": 1,
+            "unique_sources": 1,
+            "last_heard": "2026-05-15T12:00:00+00:00",
+        }
+    ]
+    assert "date,tocall,label,packet_count,unique_sources,last_heard" in csv_text
+
+
+def test_store_prune_keeps_max_packet_count(tmp_path) -> None:
+    store = PacketStore(tmp_path / "packets.sqlite3")
+    registry = TocallRegistry()
+    store.add_packet(make_packet("APDW16"))
+    store.add_packet(make_packet("APRSPV"))
+    store.add_packet(make_packet("APRS"))
+
+    removed = store.prune(max_packets=2)
+
+    assert removed == 1
+    rows = store.export_rows(registry)
+    assert [row["tocall"] for row in rows] == ["APRSPV", "APRS"]
+
+
 def test_pdf_report_contains_pdf_header(tmp_path) -> None:
     store = PacketStore(tmp_path / "packets.sqlite3")
     registry = TocallRegistry()
     registry.entries = {"APDW??": "WB2OSZ DireWolf"}
     store.add_packet(make_packet())
 
-    pdf = build_pdf_report(store.report(registry), "TOCALL Census", "v1.0.0")
+    pdf = build_pdf_report(store.report(registry), "TOCALL Census", "v1.0.1")
 
     assert pdf.startswith(b"%PDF")
     assert len(pdf) > 1000

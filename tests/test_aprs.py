@@ -1,4 +1,14 @@
-from app.aprs import classify_transport, parse_packet, server_comment_status
+import asyncio
+
+from app.aprs import (
+    AprsIsClient,
+    AprsIsConnectionDropped,
+    LoginRejectedError,
+    RECONNECT_DELAY_SECONDS,
+    classify_transport,
+    parse_packet,
+    server_comment_status,
+)
 
 
 def test_parse_tocall_between_greater_than_and_comma() -> None:
@@ -49,3 +59,37 @@ def test_server_comment_status_explains_rejected_login() -> None:
     assert state == "rejected"
     assert "APRS-IS rejected the login" in message
     assert "callsign/passcode" in message
+
+
+def test_dropped_live_connection_reconnects_quickly(monkeypatch) -> None:
+    statuses: list[tuple[str, str]] = []
+    sleep_delays: list[int] = []
+
+    async def noop_packet(_packet):
+        return None
+
+    async def record_status(state: str, message: str) -> None:
+        statuses.append((state, message))
+
+    async def fake_sleep(delay: int) -> None:
+        sleep_delays.append(delay)
+
+    class ScriptedClient(AprsIsClient):
+        def __init__(self) -> None:
+            super().__init__(on_packet=noop_packet, on_status=record_status)
+            self.attempts = 0
+
+        async def _connect_once(self) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise AprsIsConnectionDropped("APRS-IS server closed the connection")
+            raise LoginRejectedError("stop test loop")
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    client = ScriptedClient()
+    asyncio.run(client._run())
+
+    assert client.attempts == 2
+    assert sleep_delays == [RECONNECT_DELAY_SECONDS]
+    assert statuses[0] == ("reconnecting", "APRS-IS server closed the connection; reconnecting")
