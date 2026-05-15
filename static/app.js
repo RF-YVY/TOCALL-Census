@@ -6,6 +6,8 @@ const state = {
     states: new Map(),
     countries: new Map(),
   },
+  health: null,
+  healthRenderedAt: null,
 };
 
 const statusPill = document.querySelector("#statusPill");
@@ -30,39 +32,65 @@ const passcodeInput = document.querySelector("#passcode");
 const disconnectButton = document.querySelector("#disconnectButton");
 const clearButton = document.querySelector("#clearButton");
 const refreshRegistryButton = document.querySelector("#refreshRegistryButton");
+const saveSettingsButton = document.querySelector("#saveSettingsButton");
+const autoConnectInput = document.querySelector("#autoConnect");
+const retentionDaysInput = document.querySelector("#retentionDays");
+const maxPacketsInput = document.querySelector("#maxPackets");
 const registrySearchForm = document.querySelector("#registrySearchForm");
 const registrySearchInput = document.querySelector("#registrySearchInput");
 const registrySearchResults = document.querySelector("#registrySearchResults");
 const registryWebLink = document.querySelector("#registryWebLink");
 const registryYamlLink = document.querySelector("#registryYamlLink");
 const themeToggle = document.querySelector("#themeToggle");
+const mapThemeToggle = document.querySelector("#mapThemeToggle");
 const guideButton = document.querySelector("#guideButton");
 const guideDialog = document.querySelector("#guideDialog");
 const closeGuideButton = document.querySelector("#closeGuideButton");
 const currentVersion = document.querySelector("#currentVersion");
 const versionMetric = document.querySelector("#versionMetric");
 const versionStatus = document.querySelector("#versionStatus");
+const aprsUptime = document.querySelector("#aprsUptime");
+const lastPacketAt = document.querySelector("#lastPacketAt");
+const reconnectCount = document.querySelector("#reconnectCount");
+const lastReconnectReason = document.querySelector("#lastReconnectReason");
+const browserStatus = document.querySelector("#browserStatus");
+const webClientCount = document.querySelector("#webClientCount");
 
 const map = L.map("map", { preferCanvas: true }).setView([39.5, -98.35], 4);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+const lightTiles = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 18,
   attribution: "&copy; OpenStreetMap contributors",
-}).addTo(map);
+});
+const darkTiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+  maxZoom: 18,
+  attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+});
+lightTiles.addTo(map);
+let mapTheme = localStorage.getItem("tocall-census-map-theme") || "light";
 
 connectForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const data = Object.fromEntries(new FormData(connectForm).entries());
-  data.port = Number(data.port || 14580);
+  const data = collectConnectSettings();
   saveConnectSettings(data);
   await postJson("/api/connect", data);
 });
 
-connectForm.addEventListener("input", () => {
-  saveConnectSettings(Object.fromEntries(new FormData(connectForm).entries()));
+connectForm.addEventListener("input", (event) => {
+  if (event.target === passcodeInput) {
+    passcodeInput.dataset.masked = "false";
+  }
+  saveConnectSettings(collectConnectSettings());
 });
 
 disconnectButton.addEventListener("click", async () => {
   await postJson("/api/disconnect", {});
+});
+
+saveSettingsButton.addEventListener("click", async () => {
+  const data = collectConnectSettings();
+  saveConnectSettings(data);
+  const result = await postJson("/api/settings", data);
+  applySnapshot(result);
 });
 
 clearButton.addEventListener("click", async () => {
@@ -88,6 +116,10 @@ registrySearchForm.addEventListener("submit", async (event) => {
 themeToggle.addEventListener("click", () => {
   const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   setTheme(nextTheme);
+});
+
+mapThemeToggle.addEventListener("click", () => {
+  setMapTheme(mapTheme === "dark" ? "light" : "dark");
 });
 
 guideButton.addEventListener("click", () => {
@@ -170,9 +202,28 @@ function setTheme(theme) {
   setTimeout(() => map.invalidateSize(), 120);
 }
 
+function setMapTheme(theme) {
+  mapTheme = theme;
+  localStorage.setItem("tocall-census-map-theme", theme);
+  if (theme === "dark") {
+    map.removeLayer(lightTiles);
+    darkTiles.addTo(map);
+  } else {
+    map.removeLayer(darkTiles);
+    lightTiles.addTo(map);
+  }
+  mapThemeToggle.textContent = theme === "dark" ? "Light Map" : "Dark Map";
+  mapThemeToggle.setAttribute("aria-pressed", String(theme === "dark"));
+  setTimeout(() => map.invalidateSize(), 120);
+}
+
 function connectSocket() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${scheme}://${location.host}/ws`);
+
+  socket.addEventListener("open", () => {
+    browserStatus.textContent = "Live";
+  });
 
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
@@ -184,6 +235,9 @@ function connectSocket() {
     }
     if (message.type === "status") {
       renderStatus(message.status);
+    }
+    if (message.type === "health") {
+      renderHealth(message.health);
     }
     if (message.type === "summary") {
       renderSummary(message.summary);
@@ -199,8 +253,21 @@ function connectSocket() {
   });
 
   socket.addEventListener("close", () => {
+    browserStatus.textContent = "Retrying";
     setTimeout(connectSocket, 1500);
   });
+}
+
+function collectConnectSettings() {
+  const data = Object.fromEntries(new FormData(connectForm).entries());
+  data.port = Number(data.port || 14580);
+  if (passcodeInput.dataset.masked === "true") {
+    data.passcode = "masked";
+  }
+  data.auto_connect = autoConnectInput.checked;
+  data.retention_days = Number(data.retention_days || 0);
+  data.max_packets = Number(data.max_packets || 0);
+  return data;
 }
 
 function initTheme() {
@@ -224,6 +291,7 @@ function applySnapshot(data) {
   applySettings(data.settings || data.status?.settings || {});
   applyRegistryLinks(data.registry_links || {});
   renderStatus(data.status);
+  renderHealth(data.health || data.status?.health);
   renderSummary(data.summary);
   registryCount.textContent = data.registry_count ?? 0;
   targetLabel.textContent = data.target_tocall ? `Tracking ${data.target_tocall}` : "All traffic";
@@ -266,8 +334,21 @@ function applySettings(settings) {
   if (settings.callsign !== undefined) {
     callsignInput.value = settings.callsign || "";
   }
+  if (settings.auto_connect !== undefined) {
+    autoConnectInput.checked = Boolean(settings.auto_connect);
+  }
+  if (settings.retention_days !== undefined) {
+    retentionDaysInput.value = settings.retention_days || 0;
+  }
+  if (settings.max_packets !== undefined) {
+    maxPacketsInput.value = settings.max_packets || 0;
+  }
   if (settings.passcode && settings.passcode !== "masked") {
     passcodeInput.value = settings.passcode;
+    passcodeInput.dataset.masked = "false";
+  }
+  if (settings.passcode === "masked") {
+    passcodeInput.dataset.masked = "true";
   }
 }
 
@@ -292,6 +373,29 @@ function renderStatus(status) {
   statusPill.className = `status-pill status-${stateText}`;
   statusPill.textContent = `${statusLabel(stateText)}: ${message}`;
   renderConnectButton(Boolean(status?.running));
+  renderHealth(status?.health);
+}
+
+function renderHealth(health) {
+  if (!health) {
+    return;
+  }
+  state.health = health;
+  state.healthRenderedAt = Date.now();
+  renderHealthClock();
+  reconnectCount.textContent = health.reconnect_count ?? 0;
+  lastReconnectReason.textContent = health.last_reconnect_reason || "No reconnects";
+  webClientCount.textContent = `${health.web_clients ?? 0} client${health.web_clients === 1 ? "" : "s"}`;
+  lastPacketAt.textContent = health.last_packet_at ? `Last packet ${formatDateTime(health.last_packet_at)}` : "No packets yet";
+}
+
+function renderHealthClock() {
+  if (!state.health) {
+    return;
+  }
+  const elapsedSinceRender = state.healthRenderedAt ? Math.floor((Date.now() - state.healthRenderedAt) / 1000) : 0;
+  const connectedSeconds = Number(state.health.aprs_connected_seconds || 0);
+  aprsUptime.textContent = formatDuration(connectedSeconds ? connectedSeconds + elapsedSinceRender : 0);
 }
 
 function statusLabel(stateText) {
@@ -300,10 +404,12 @@ function statusLabel(stateText) {
     cleared: "Cleared",
     connecting: "Connecting",
     running: "Connected",
+    reconnecting: "Reconnecting",
     server: "Server",
     warning: "Warning",
     error: "Connection Error",
     rejected: "Login Rejected",
+    reconnecting: "Reconnecting",
   };
   return labels[stateText] || stateText;
 }
@@ -432,19 +538,15 @@ function incrementLocationCount(map, name) {
 }
 
 function prependPacket(packet) {
-  const node = document.createElement("article");
+  const node = document.createElement("tr");
   node.className = "packet";
   node.innerHTML = `
-    <div>
-      <strong>${escapeHtml(packet.source)}</strong>
-      <div class="muted">${formatTime(packet.heard_at)}</div>
-    </div>
-    <div><span class="tag">${escapeHtml(packet.tocall)}</span></div>
-    <div>
-      <strong>${escapeHtml(packet.label)}</strong>
-      <div class="muted">${escapeHtml(packet.transport)} ${escapeHtml(packet.path || "")}</div>
-      <code>${escapeHtml(packet.raw || "")}</code>
-    </div>
+    <td>${formatDateTime(packet.heard_at)}</td>
+    <td><strong>${escapeHtml(packet.source)}</strong></td>
+    <td><span class="tag">${escapeHtml(packet.tocall)}</span></td>
+    <td>${escapeHtml(packet.label)}</td>
+    <td>${escapeHtml(packet.transport)}<div class="muted">${escapeHtml(packet.path || "")}</div></td>
+    <td><code>${escapeHtml(packet.raw || "")}</code></td>
   `;
   packetList.prepend(node);
   while (packetList.children.length > 80) {
@@ -486,6 +588,33 @@ function formatTime(value) {
   });
 }
 
+function formatDateTime(value) {
+  return new Date(value).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatDuration(totalSeconds) {
+  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes) {
+    return `${minutes}m`;
+  }
+  return `${seconds}s`;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -496,7 +625,9 @@ function escapeHtml(value) {
 }
 
 initTheme();
+setMapTheme(mapTheme);
 restoreConnectSettings();
 loadSnapshot();
 checkVersion();
 connectSocket();
+setInterval(renderHealthClock, 1000);

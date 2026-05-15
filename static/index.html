@@ -10,7 +10,7 @@
     <link rel="shortcut icon" href="/favicon.ico" />
     <link rel="manifest" href="/site.webmanifest" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=1.0.0-ui9" />
+    <link rel="stylesheet" href="/static/styles.css?v=1.0.1" />
   </head>
   <body>
     <header class="app-header">
@@ -51,6 +51,7 @@
           <a class="button-link" href="/api/export/json" target="_blank" rel="noreferrer">Export JSON</a>
           <a class="button-link" href="/api/export/csv" target="_blank" rel="noreferrer">Export CSV</a>
           <a class="button-link" href="/api/export/pdf" target="_blank" rel="noreferrer">Export PDF</a>
+          <button type="button" id="saveSettingsButton">Save Settings</button>
           <details class="advanced-identity">
             <summary>Advanced APRS-IS identity</summary>
             <div class="advanced-fields">
@@ -61,6 +62,23 @@
               <label>
                 Passcode
                 <input id="passcode" name="passcode" value="-1" type="password" autocomplete="off" />
+              </label>
+            </div>
+          </details>
+          <details class="advanced-identity">
+            <summary>Long-running monitor options</summary>
+            <div class="advanced-fields monitor-fields">
+              <label class="checkbox-label">
+                <input id="autoConnect" name="auto_connect" type="checkbox" value="true" />
+                Auto-connect on launch
+              </label>
+              <label>
+                Keep days
+                <input id="retentionDays" name="retention_days" value="0" min="0" max="3650" inputmode="numeric" />
+              </label>
+              <label>
+                Max packets
+                <input id="maxPackets" name="max_packets" value="0" min="0" max="1000000" inputmode="numeric" />
               </label>
             </div>
           </details>
@@ -86,8 +104,23 @@
         </div>
         <div class="metric update-metric" id="versionMetric">
           <span>Version</span>
-          <strong id="currentVersion">v1.0.0</strong>
+          <strong id="currentVersion">v1.0.1</strong>
           <a id="versionStatus" href="https://github.com/RF-YVY/TOCALL-Census" target="_blank" rel="noreferrer">Checking GitHub...</a>
+        </div>
+        <div class="metric">
+          <span>APRS Uptime</span>
+          <strong id="aprsUptime">0s</strong>
+          <small id="lastPacketAt">No packets yet</small>
+        </div>
+        <div class="metric">
+          <span>Reconnects</span>
+          <strong id="reconnectCount">0</strong>
+          <small id="lastReconnectReason">No reconnects</small>
+        </div>
+        <div class="metric">
+          <span>Browser Link</span>
+          <strong id="browserStatus">Opening</strong>
+          <small id="webClientCount">0 clients</small>
         </div>
       </section>
 
@@ -130,12 +163,15 @@
 
       <section class="dashboard-grid">
         <div class="panel map-panel">
-          <div class="panel-head">
-            <h2>Heard Positions</h2>
+        <div class="panel-head">
+          <h2>Heard Positions</h2>
+          <div class="panel-actions">
             <span id="mapCount">0 mapped</span>
+            <button type="button" id="mapThemeToggle" class="small-button" aria-pressed="false">Dark Map</button>
           </div>
-          <div id="map"></div>
         </div>
+        <div id="map"></div>
+      </div>
 
         <div class="panel">
           <div class="panel-head">
@@ -163,7 +199,21 @@
           <h2>Live Packets</h2>
           <a href="/api/counts" target="_blank" rel="noreferrer">JSON counts</a>
         </div>
-        <div id="packetList" class="packet-list"></div>
+        <div class="table-wrap live-table-wrap">
+          <table class="packet-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Source</th>
+                <th>TOCALL</th>
+                <th>Device or software</th>
+                <th>Transport</th>
+                <th>Raw packet</th>
+              </tr>
+            </thead>
+            <tbody id="packetList"></tbody>
+          </table>
+        </div>
       </section>
     </main>
 
@@ -205,6 +255,6 @@
     </dialog>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="/static/app.js?v=1.0.0-ui9"></script>
+    <script src="/static/app.js?v=1.0.1"></script>
   </body>
 </html>
