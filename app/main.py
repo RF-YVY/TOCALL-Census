@@ -15,6 +15,7 @@ from app.aprs import AprsIsClient, ParsedPacket
 from app.geography import country, us_state
 from app.paths import static_dir
 from app.pdf_report import build_pdf_report
+from app.privacy import mask_path, mask_raw_packet, masked_station
 from app.registry import REGISTRY_MASTER_URL, REGISTRY_WEB_URL, TocallRegistry
 from app.settings import AppSettings
 from app.store import PacketStore
@@ -292,11 +293,11 @@ def packet_to_event(packet: ParsedPacket) -> dict[str, Any]:
 
     return {
         "heard_at": packet.heard_at.isoformat(),
-        "source": packet.source,
+        "source": masked_station(packet.source),
         "tocall": packet.tocall,
         "label": registry.lookup(packet.tocall) or "Unknown",
-        "path": packet.path,
-        "raw": packet.raw,
+        "path": mask_path(packet.path),
+        "raw": mask_raw_packet(packet.raw, source=packet.source, tocall=packet.tocall, path=packet.path),
         "lat": packet.lat,
         "lon": packet.lon,
         "us_state": state_name,

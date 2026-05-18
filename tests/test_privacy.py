@@ -42,5 +42,5 @@ def iter_source_files():
         yield from (
             child
             for child in path.rglob("*")
-            if child.is_file() and child.suffix not in {".pyc", ".sqlite3"}
+            if child.is_file() and child.suffix not in {".ico", ".png", ".pyc", ".sqlite3"}
         )

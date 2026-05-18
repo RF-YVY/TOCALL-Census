@@ -11,6 +11,7 @@ from typing import Any
 from app.aprs import ParsedPacket
 from app.geography import country, us_state
 from app.paths import data_dir
+from app.privacy import mask_path, mask_raw_packet, masked_station
 
 
 DATA_DIR = data_dir()
@@ -46,8 +47,29 @@ class PacketStore:
             """
         )
         self.conn.commit()
+        self.mask_existing_packet_identifiers()
+
+    def mask_existing_packet_identifiers(self) -> None:
+        rows = self.conn.execute("SELECT id, source, tocall, path, raw FROM packets").fetchall()
+        updates: list[tuple[str, str, str, int]] = []
+        for row in rows:
+            masked_source = masked_station(row["source"])
+            masked_path = mask_path(row["path"])
+            masked_raw = mask_raw_packet(row["raw"], source=row["source"], tocall=row["tocall"], path=row["path"])
+            if (masked_source, masked_path, masked_raw) != (row["source"], row["path"], row["raw"]):
+                updates.append((masked_source, masked_path, masked_raw, row["id"]))
+        if not updates:
+            return
+        self.conn.executemany(
+            "UPDATE packets SET source = ?, path = ?, raw = ? WHERE id = ?",
+            updates,
+        )
+        self.conn.commit()
 
     def add_packet(self, packet: ParsedPacket) -> None:
+        masked_source = masked_station(packet.source)
+        masked_path = mask_path(packet.path)
+        masked_raw = mask_raw_packet(packet.raw, source=packet.source, tocall=packet.tocall, path=packet.path)
         self.conn.execute(
             """
             INSERT INTO packets
@@ -56,11 +78,11 @@ class PacketStore:
             """,
             (
                 packet.heard_at.isoformat(),
-                packet.source,
+                masked_source,
                 packet.tocall,
-                packet.path,
+                masked_path,
                 packet.body,
-                packet.raw,
+                masked_raw,
                 packet.lat,
                 packet.lon,
                 packet.transport,
@@ -316,13 +338,17 @@ def row_to_event(row: sqlite3.Row, registry: Any) -> dict[str, Any]:
         state_name = us_state(lat, lon)
         country_name = "United States" if state_name else country(lat, lon)
 
+    source = row["source"]
+    path = row["path"]
+    raw = row["raw"] if "raw" in row.keys() else ""
+
     return {
         "heard_at": heard_at,
-        "source": row["source"],
+        "source": masked_station(source),
         "tocall": row["tocall"],
         "label": registry.lookup(row["tocall"]) or "Unknown",
-        "path": row["path"],
-        "raw": row["raw"] if "raw" in row.keys() else "",
+        "path": mask_path(path),
+        "raw": mask_raw_packet(raw, source=source, tocall=row["tocall"], path=path),
         "lat": lat,
         "lon": lon,
         "us_state": state_name,
